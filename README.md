@@ -50,6 +50,7 @@ kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.16.1/confi
 配置 IP 地址池：
 
 ```yaml
+cat >> IPAddressPool.yaml <<EOF
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -58,11 +59,13 @@ metadata:
 spec:
   addresses:
     - 192.168.0.150-192.168.0.155
+EOF
 ```
 
 配置 L2 广播：
 
 ```yaml
+cat >> L2Advertisement.yaml <<EOF
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:
@@ -71,6 +74,7 @@ metadata:
 spec:
   ipAddressPools:
     - my-ip-pool
+EOF
 ```
 
 ---
@@ -204,7 +208,11 @@ mc ls models/llm-models/Qwen3-0.6B
 
 
 ```bash
-问题：
+# 注意：如果 nvidia-driver-daemonset-xxx 这个pod没有准备好的话，其他Pod可能会一直处于Init状态。
+gpu-operator   nvidia-driver-daemonset-7vwlm    0/1     PodInitializing   0     54m
+
+
+# 问题：（也可能是因为 nvidia-driver-daemonset-xxx 服务没OK的情况，多半是镜像没下载下来）
 kubectl describe pods -n gpu-operator gpu-feature-discovery-tg9ps
 
   Warning  FailedCreatePodSandBox  4m15s                kubelet            Failed to create pod sandbox: rpc error: code = Unknown desc = unable to get OCI runtime for sandbox "4a460adf3849448a301c5bd952b0d585d39debb06c01eb774de777125b34b6c2": no runtime for "nvidia" is configured
