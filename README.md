@@ -104,6 +104,47 @@ helm install openebs --namespace openebs . \
 ```
 
 ---
+## 4. Prometheus - 集群监控
+
+后续根据监控指标来扩缩容vllm服务。  
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm pull prometheus-community/prometheus
+cd prometheus
+
+
+# 修改配置：
+vim values.yaml
+server:
+  persistentVolume:
+    enabled: true
+    statefulSetNameOverride: ""
+    accessModes:
+      - ReadWriteOnce
+    labels: {}
+    annotations: {}
+    existingClaim: ""
+    mountPath: /data
+    size: 8Gi
+    storageClass: "openebs-hostpath"
+    subPath: ""
+
+
+alertmanager:
+  enabled: true
+  persistence:
+    enabled: true
+    annotations: {}
+    labels: {}
+    storageClass: "openebs-hostpath"
+    accessModes:
+      - ReadWriteOnce
+    size: 2Gi
+
+helm install prometheus . -n monitoring --create-namespace
+```
+---
 
 ## 4. MinIO — 模型对象存储
 
