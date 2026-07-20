@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vllm-pd-ingress
+  namespace: llm-inference
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/upstream-keepalive-connections: "32"
+    # ========== Session 亲和：基于 Cookie 保证同会话路由到同一后端 ==========
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "VLLM_SESSION"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"
+    # ========== Consistent Hash 辅助（X-Session-ID 兜底） ==========
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$http_x_session_id"
+    nginx.ingress.kubernetes.io/upstream-hash-by-subset: "true"
+    # ========== Backpressure 限速 ==========
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-rpm: "3000"
+    nginx.ingress.kubernetes.io/limit-connections: "100"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: vllm-pd.demo.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: vllm-router
+            port:
+              number: 8000

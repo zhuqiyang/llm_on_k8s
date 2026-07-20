@@ -1,0 +1,75 @@
+# 01-lmcache-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lmcache
+---
+# 02-lmcache-server.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: lmcache-server
+  namespace: lmcache
+spec:
+  serviceName: lmcache-server
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lmcache-server
+  template:
+    metadata:
+      labels:
+        app: lmcache-server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics" 
+    spec:
+      #nodeSelector:
+      #  kubernetes.io/hostname: k8s-node02.magedu.com
+      containers:
+      - name: server
+        image: lmcache/vllm-openai:v0.3.15
+        command: ["/opt/venv/bin/python3", "-m", "lmcache.v1.multiprocess.server"]
+        args:
+          - "--host"
+          - "0.0.0.0"
+          - "--port"
+          - "5555"
+          - "--l1-size-gb"         # Prefix Cache 存储空间
+          - "10"                   # 10 GB
+          - "--eviction-policy"    # 缓存淘汰算法
+          - "LRU"                  # LRU（最近最少使用）
+          - "--chunk-size"         # 大于此值的缓存块才进行缓存
+          - "256"
+        ports:
+        - containerPort: 5555
+          name: zmq
+        - containerPort: 9090
+          name: prometheus
+        resources:
+          requests:
+            memory: "10Gi"              # 内存需大于 --l1-size-gb 的值
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "20Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+---
+# 03-lmcache-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: lmcache-server
+  namespace: lmcache
+spec:
+  selector:
+    app: lmcache-server
+  ports:
+  - port: 5555
+    targetPort: 5555
+    name: zmq
+  - port: 9090
+    targetPort: 9090
+    name: prometheus

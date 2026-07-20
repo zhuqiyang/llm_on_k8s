@@ -1,0 +1,51 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-decode-scaler
+  namespace: llm-inference
+spec:
+  scaleTargetRef:
+    name: vllm-decode
+    kind: StatefulSet
+    apiVersion: apps/v1
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 5                 # Decode 通常需要更多副本
+  fallback:
+    failureThreshold: 3
+    replicas: 2                       # Decode 高可用：故障回退 ≥2 副本
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 10
+          selectPolicy: Max
+        scaleDown:
+          stabilizationWindowSeconds: 300   # Decode 长连接，缩容更保守
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 60
+          selectPolicy: Min
+  triggers:
+  # ========== 触发器 1：运行请求数 ==========
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+      metricName: vllm-decode-num-requests-running
+      query: |
+        sum(vllm:num_requests_running{namespace="llm-inference",app="vllm-decode"})
+      threshold: "64"
+  # ========== 触发器 2：P99 ITL（Inter-Token Latency）兜底 ==========
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+      metricName: vllm-decode-p99-itl-ms
+      query: |
+        histogram_quantile(0.99, sum(rate(vllm:request_generation_tokens_per_sec_bucket{namespace="llm-inference",app="vllm-decode"}[2m])) by (le))
+      threshold: "50"

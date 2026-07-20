@@ -1,0 +1,185 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vllm-decode
+  namespace: llm-inference
+  labels:
+    app: vllm-decode
+spec:
+  serviceName: vllm-decode-headless
+  replicas: 2                    # Decode 通常需要更多副本处理并发
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: vllm-decode
+  template:
+    metadata:
+      labels:
+        app: vllm-decode
+        model: decode
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # ========== 反亲和：Decode 实例跨节点分散 ==========
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - vllm-decode
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+      - name: model-ready-check
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          for i in $(seq 1 300); do
+            if [ -f /data/models/Qwen3-0.6B/.ready ]; then
+              echo "[$(date)] Model ready file detected on this node. Proceeding."
+              exit 0
+            fi
+            echo "[$(date)] Waiting for model preloader... ($i/300)"
+            sleep 2
+          done
+          echo "[$(date)] Timeout: model preloader not ready on this node"
+          exit 1
+        volumeMounts:
+        - name: host-model-cache
+          mountPath: /data/models
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+      containers:
+      - name: vllm-decode
+        image: lmcache/vllm-openai:v0.3.15
+        args:
+          - /data/models/Qwen3-0.6B
+          - --served-model-name
+          - qwen3-06b
+          - --tensor-parallel-size
+          - "1"
+          - --max-model-len
+          - "4096"
+          # ========== Decode 优化：高并发序列，限制 batch tokens ==========
+          - --max-num-batched-tokens
+          - "8192"
+          - --max-num-seqs
+          - "64"                      # 高并发解码
+          - --enable-chunked-prefill
+          - --enable-prefix-caching
+          - --gpu-memory-utilization
+          - "0.8"                     # Decode 可激进占满显存
+          - --host
+          - 0.0.0.0
+          - --port
+          - "8000"
+          - --uvicorn-log-level
+          - info
+          # ========== PD 分离关键配置：消费者角色 ==========
+          - --kv-transfer-config
+          - '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_consumer"}'
+        env:
+          - name: PYTHONHASHSEED
+            value: "0"
+          - name: LMCACHE_USE_EXPERIMENTAL
+            value: "True"
+          - name: LMCACHE_CHUNK_SIZE
+            value: "256"
+          - name: LMCACHE_LOCAL_CPU
+            value: "True"
+          - name: LMCACHE_MAX_LOCAL_CPU_SIZE
+            value: "5"
+          - name: LMCACHE_REMOTE_URL
+            value: "lm://lmcache-server.lmcache.svc.cluster.local:5555"
+          - name: LMCACHE_REMOTE_SERDE
+            value: "naive"
+          - name: LMCACHE_SAVE_UNFULL_CHUNK
+            value: "True"
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            memory: "20Gi"
+            cpu: "4"
+          requests:
+            nvidia.com/gpu: "1"
+            memory: "12Gi"
+            cpu: "2"
+        volumeMounts:
+        - name: host-model-cache
+          mountPath: /data/models
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 15
+          timeoutSeconds: 5
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 60
+      volumes:
+      - name: host-model-cache
+        hostPath:
+          path: /data/models
+          type: DirectoryOrCreate
+---
+# Decode Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-decode-headless
+  namespace: llm-inference
+  labels:
+    app: vllm-decode
+spec:
+  clusterIP: None
+  selector:
+    app: vllm-decode
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+---
+# Decode ClusterIP Service（Router 负载均衡入口）
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-decode-service
+  namespace: llm-inference
+  labels:
+    app: vllm-decode
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-decode
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  sessionAffinity: None

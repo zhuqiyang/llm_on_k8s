@@ -1,0 +1,51 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-prefill-scaler
+  namespace: llm-inference
+spec:
+  scaleTargetRef:
+    name: vllm-prefill
+    kind: StatefulSet
+    apiVersion: apps/v1
+  pollingInterval: 15
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 2
+  fallback:
+    failureThreshold: 3
+    replicas: 1
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 10
+          selectPolicy: Max
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+          - type: Pods
+            value: 1
+            periodSeconds: 30
+          selectPolicy: Min
+  triggers:
+  # ========== 触发器 1：等待队列深度（主触发器） ==========
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+      metricName: vllm-prefill-num-requests-waiting
+      query: |
+        sum(vllm:num_requests_waiting{namespace="llm-inference",app="vllm-prefill"})
+      threshold: "4"
+  # ========== 触发器 2：P99 TTFT 延迟兜底 ==========
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-server.monitoring.svc.cluster.local:80
+      metricName: vllm-prefill-p99-ttft-ms
+      query: |
+        histogram_quantile(0.99, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace="llm-inference",app="vllm-prefill"}[2m])) by (le)) * 1000
+      threshold: "500"
