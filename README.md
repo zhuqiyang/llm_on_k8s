@@ -35,6 +35,62 @@ unset no_proxy
 
 ---
 
+### 预先安装组件
+#### 1.1 Clium
+```bash
+# 下载 cilium
+helm repo add cilium https://helm.cilium.io
+helm pull cilium/cilium
+
+# 安装 cilium
+tar -xf cilium-*.tgz
+cd cilium/
+
+# 安装 cilium
+helm install cilium . --namespace kube-system --set hubble.relay.enabled=true --set hubble.ui.enabled=true --set prometheus.enabled=true --set operator.prometheus.enabled=true --set hubble.enabled=true --set hubble.metrics.enabled="{dns,drop,tcp,flow,port-distribution,icmp,http}"
+```
+
+#### 1.2 CoreDNS
+```bash
+# 下载 coredns
+helm repo add coredns https://coredns.github.io/helm
+helm pull coredns/coredns
+
+# 安装 coredns
+tar -xf coredns-*.tgz
+cd coredns/
+
+# 安装 coredns
+helm install coredns . -n kube-system --set service.clusterIP=${dns_clusterip} # service使用的clusterIP网段，不可宇Pod网段和Node网段重复
+```
+
+#### 1.3 Ingress-Nginx
+
+```bash
+# 下载 ingress-nginx
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm pull ingress-nginx/ingress-nginx
+
+# 安装 ingress-controller
+tar -xf ingress-nginx-*.tgz
+cd ingress-nginx/
+
+# 创建命名空间
+kubectl create ns ingress-nginx
+
+# 为所有节点添加标签
+for var in `kubectl get nodes | grep -v 'NAME' | awk '{print $1}'`; do kubectl label node $var ingress=true; done
+
+# 安装 ingress-controller
+helm install ingress-nginx -n ingress-nginx .
+
+# 删除验证 webhook，可选，建议删除，否者验证可能非常繁琐
+kubectl delete validatingwebhookconfigurations ingress-nginx-admission
+```
+
+---
+
+
 ## 2. MetalLB — 负载均衡
 
 为 LoadBalancer 类型的 Service 分配外部可访问的 IP 地址。
