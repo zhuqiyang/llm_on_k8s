@@ -1,0 +1,269 @@
+# 06-vllm-otel-example.yaml
+# 带 OpenTelemetry 链路追踪的 vLLM Prefill StatefulSet 示例
+# 展示如何通过 InitContainer + 环境变量为 vLLM 注入 OTEL 追踪
+#
+# 核心变更（相比无追踪版本）：
+#   1. 新增 InitContainer: otel-setup（安装 OTEL Python 包）
+#   2. 新增共享 Volume: otel-packages（emptyDir）
+#   3. 主容器改用 opentelemetry-instrument 包装启动
+#   4. 新增 OTEL_* 环境变量
+#   5. PYTHONPATH 追加 /otel-packages
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vllm-prefill-otel
+  namespace: llm-inference
+  labels:
+    app: vllm-prefill-otel
+spec:
+  serviceName: vllm-prefill-otel-headless
+  replicas: 1
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: vllm-prefill-otel
+  template:
+    metadata:
+      labels:
+        app: vllm-prefill-otel
+        model: prefill
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # ========== 反亲和：跨节点分散 ==========
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - vllm-prefill-otel
+              topologyKey: kubernetes.io/hostname
+      # ========== InitContainers ==========
+      initContainers:
+      # --- 1) 模型就绪检查（原有） ---
+      - name: model-ready-check
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - |
+          for i in $(seq 1 300); do
+            if [ -f /data/models/Qwen3-0.6B/.ready ]; then
+              echo "[$(date)] Model ready file detected on this node. Proceeding."
+              exit 0
+            fi
+            echo "[$(date)] Waiting for model preloader... ($i/300)"
+            sleep 2
+          done
+          echo "[$(date)] Timeout: model preloader not ready on this node"
+          exit 1
+        volumeMounts:
+        - name: host-model-cache
+          mountPath: /data/models
+        resources:
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+      # --- 2) OTEL 依赖安装（新增） ---
+      - name: otel-setup
+        image: python:3.11-slim
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          echo "[$(date)] Installing OpenTelemetry SDK to shared volume..."
+          pip install --target /otel-packages --no-cache-dir \
+            opentelemetry-distro==0.48b0 \
+            opentelemetry-exporter-otlp-proto-grpc==1.27.0 \
+            opentelemetry-instrumentation-fastapi==0.48b0 \
+            opentelemetry-instrumentation-grpc==0.48b0 \
+            opentelemetry-instrumentation-requests==0.48b0 \
+            opentelemetry-instrumentation-httpx==0.48b0 \
+            opentelemetry-instrumentation-logging==0.48b0 \
+            opentelemetry-sdk==1.27.0 \
+            opentelemetry-api==1.27.0
+          echo "[$(date)] OpenTelemetry SDK installation complete."
+          echo "[$(date)] Installed packages:"
+          ls /otel-packages/ | head -20
+        volumeMounts:
+        - name: otel-packages
+          mountPath: /otel-packages
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+      # ========== 主容器 ==========
+      containers:
+      - name: vllm-prefill
+        image: lmcache/vllm-openai:v0.3.15
+        # ========== 使用 opentelemetry-instrument 包装启动 ==========
+        command: ["opentelemetry-instrument"]
+        args:
+          # OTEL 配置
+          - --traces_exporter
+          - otlp
+          - --exporter_otlp_endpoint
+          - http://otel-collector.observability.svc.cluster.local:4317
+          - --service_name
+          - vllm-prefill
+          # 分隔符：后面是原始 vLLM 命令
+          - --
+          - python
+          - -m
+          - vllm.entrypoints.openai.api_server
+          # ========== vLLM 参数 ==========
+          - /data/models/Qwen3-0.6B
+          - --served-model-name
+          - qwen3-06b
+          - --tensor-parallel-size
+          - "1"
+          - --max-model-len
+          - "4096"
+          - --max-num-batched-tokens
+          - "32768"
+          - --max-num-seqs
+          - "8"
+          - --enable-chunked-prefill
+          - --enable-prefix-caching
+          - --gpu-memory-utilization
+          - "0.85"
+          - --host
+          - 0.0.0.0
+          - --port
+          - "8000"
+          - --uvicorn-log-level
+          - info
+          - --kv-transfer-config
+          - '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_producer"}'
+        # ========== 环境变量 ==========
+        env:
+        # --- OTEL 配置 ---
+        - name: PYTHONPATH
+          value: "/otel-packages"
+        - name: OTEL_SERVICE_NAME
+          value: "vllm-prefill"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector.observability.svc.cluster.local:4317"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.namespace=llm-inference,model=qwen3-06b,deployment.environment=k8s"
+        - name: OTEL_PROPAGATORS
+          value: "tracecontext,baggage"
+        - name: OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
+          value: "true"
+        # --- LMCache 配置 ---
+        - name: PYTHONHASHSEED
+          value: "0"
+        - name: LMCACHE_USE_EXPERIMENTAL
+          value: "True"
+        - name: LMCACHE_CHUNK_SIZE
+          value: "256"
+        - name: LMCACHE_LOCAL_CPU
+          value: "True"
+        - name: LMCACHE_MAX_LOCAL_CPU_SIZE
+          value: "5"
+        - name: LMCACHE_REMOTE_URL
+          value: "lm://lmcache-server.lmcache.svc.cluster.local:5555"
+        - name: LMCACHE_REMOTE_SERDE
+          value: "naive"
+        - name: LMCACHE_SAVE_UNFULL_CHUNK
+          value: "True"
+        # ========== 端口 ==========
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        # ========== 资源 ==========
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            memory: "16Gi"
+            cpu: "6"
+          requests:
+            nvidia.com/gpu: "1"
+            memory: "6Gi"
+            cpu: "4"
+        # ========== 挂载 ==========
+        volumeMounts:
+        - name: otel-packages
+          mountPath: /otel-packages
+          readOnly: true
+        - name: host-model-cache
+          mountPath: /data/models
+          readOnly: true
+        # ========== 探针 ==========
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 120
+          periodSeconds: 15
+          timeoutSeconds: 5
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          failureThreshold: 60
+      # ========== Volumes ==========
+      volumes:
+      - name: otel-packages
+        emptyDir:
+          sizeLimit: "200Mi"           # OTEL Python 包约 50-100MB
+      - name: host-model-cache
+        hostPath:
+          path: /data/models
+          type: DirectoryOrCreate
+---
+# Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-prefill-otel-headless
+  namespace: llm-inference
+  labels:
+    app: vllm-prefill-otel
+spec:
+  clusterIP: None
+  selector:
+    app: vllm-prefill-otel
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+---
+# ClusterIP Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-prefill-otel-service
+  namespace: llm-inference
+  labels:
+    app: vllm-prefill-otel
+spec:
+  type: ClusterIP
+  selector:
+    app: vllm-prefill-otel
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http

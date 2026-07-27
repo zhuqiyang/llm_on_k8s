@@ -1,0 +1,112 @@
+# 02-jaeger-allinone.yaml
+# Jaeger allInOne 实例 — 开发 / 测试环境
+# 所有组件（Collector + Query + Ingester）合并为一个 Pod，数据存内存
+---
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger-allinone
+  namespace: observability
+spec:
+  strategy: allInOne
+  allInOne:
+    image: jaegertracing/all-in-one:1.62.0
+    # ========== 环境变量 ==========
+    options:
+      # 内存存储配置
+      memory:
+        max-traces: "50000"          # 内存中最多保留 50000 条 Trace
+      # 日志级别
+      log-level: info
+      # 采样策略
+      sampling:
+        strategies-file: ""
+    # ========== 资源限制 ==========
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "2Gi"
+        cpu: "1"
+  # ========== 采样配置 ==========
+  sampling:
+    options:
+      default_strategy:
+        type: probabilistic
+        param: 1.0                     # 开发环境：100% 采样
+      service_strategies:
+        - service: ingress-nginx
+          type: probabilistic
+          param: 0.1                   # Ingress 产生的 Span 多，降低采样率
+  # ========== UI 配置 ==========
+  ui:
+    options:
+      dependencies:
+        menuEnabled: true              # 显示服务依赖图
+      tracking:
+        gaID: ""
+      monitor:
+        menuEnabled: true
+      menu:
+        - label: "About"
+          items:
+            - label: "Jaeger Documentation"
+              url: "https://www.jaegertracing.io/docs/"
+  # ========== Ingress（由单独的 Ingress 资源管理） ==========
+  ingress:
+    enabled: false                     # 禁用内置 Ingress，使用自定义 04-jaeger-ingress.yaml
+---
+# ClusterIP Service：Collector（接收 Span）
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-collector
+  namespace: observability
+  labels:
+    app: jaeger
+    component: collector
+spec:
+  selector:
+    app: jaeger
+    app.kubernetes.io/component: all-in-one
+  ports:
+  - name: grpc-otlp
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: http-otlp
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  - name: grpc-jaeger
+    port: 14250
+    targetPort: 14250
+    protocol: TCP
+  - name: http-thrift
+    port: 14268
+    targetPort: 14268
+    protocol: TCP
+  - name: zipkin
+    port: 9411
+    targetPort: 9411
+    protocol: TCP
+---
+# ClusterIP Service：Query UI
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-query
+  namespace: observability
+  labels:
+    app: jaeger
+    component: query
+spec:
+  selector:
+    app: jaeger
+    app.kubernetes.io/component: all-in-one
+  ports:
+  - name: http-query
+    port: 16686
+    targetPort: 16686
+    protocol: TCP

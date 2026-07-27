@@ -1,0 +1,29 @@
+# 04-jaeger-ingress.yaml
+# Jaeger Query UI 的 Ingress 入口
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jaeger-query
+  namespace: observability
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # 启用 Basic Auth（可选，建议生产环境开启）
+    # nginx.ingress.kubernetes.io/auth-type: basic
+    # nginx.ingress.kubernetes.io/auth-secret: jaeger-basic-auth
+    # nginx.ingress.kubernetes.io/auth-realm: "Jaeger UI Authentication Required"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: jaeger.demo.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: jaeger-query
+            port:
+              number: 16686

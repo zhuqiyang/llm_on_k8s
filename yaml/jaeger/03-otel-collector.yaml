@@ -1,0 +1,186 @@
+# 03-otel-collector.yaml
+# OpenTelemetry Collector — 作为 Span 接收网关，统一处理后转发给 Jaeger
+---
+# ========== ConfigMap：OTEL Collector 配置 ==========
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      # ========== OTLP 接收器 ==========
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317     # 各服务通过 gRPC 发送 Span
+          http:
+            endpoint: 0.0.0.0:4318     # HTTP 备用
+      # ========== Zipkin 兼容接收器（可选） ==========
+      zipkin:
+        endpoint: 0.0.0.0:9411
+
+    processors:
+      # ========== 批量发送（降低网络开销） ==========
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+        send_batch_max_size: 1024
+      # ========== 内存限制 ==========
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 512
+        spike_limit_mib: 128
+      # ========== 概率采样（生产环境启用） ==========
+      # probabilistic_sampler:
+      #   sampling_percentage: 10
+      # ========== 过滤健康检查 Span（减少噪音） ==========
+      filter/health:
+        error_mode: ignore
+        traces:
+          span:
+            - 'attributes["http.target"] == "/health"'
+            - 'attributes["http.target"] == "/metrics"'
+            - 'attributes["http.url"] == "/health"'
+            - 'attributes["http.url"] == "/metrics"'
+      # ========== 资源属性增强 ==========
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: "k8s"
+            action: upsert
+          - key: cluster.name
+            value: "llm-inference"
+            action: upsert
+      # ========== 限制 Span 属性大小 ==========
+      attributes/prune:
+        actions:
+          - key: "http.request.header.authorization"
+            action: delete
+          - key: "http.request.header.cookie"
+            action: delete
+
+    exporters:
+      # ========== Jaeger gRPC 导出器（主要） ==========
+      jaeger:
+        endpoint: jaeger-collector.observability.svc.cluster.local:14250
+        tls:
+          insecure: true
+      # ========== 调试导出器（stdout，开发排查用） ==========
+      # logging:
+      #   loglevel: debug
+      #   sampling_initial: 5
+      #   sampling_thereafter: 200
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133        # Collector 自身健康检查
+      pprof:
+        endpoint: 0.0.0.0:1777         # 性能分析端口
+      zpages:
+        endpoint: 0.0.0.0:55679        # 调试页面
+
+    service:
+      extensions: [health_check, pprof, zpages]
+      pipelines:
+        traces:
+          receivers: [otlp, zipkin]
+          processors: [memory_limiter, filter/health, resource, attributes/prune, batch]
+          exporters: [jaeger]
+---
+# ========== Deployment ==========
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.111.0
+        args:
+          - --config=/conf/config.yaml
+        ports:
+        - containerPort: 4317       # OTLP gRPC
+          name: otlp-grpc
+          protocol: TCP
+        - containerPort: 4318       # OTLP HTTP
+          name: otlp-http
+          protocol: TCP
+        - containerPort: 9411       # Zipkin
+          name: zipkin
+          protocol: TCP
+        - containerPort: 13133      # Health Check
+          name: health-check
+          protocol: TCP
+        env:
+        - name: GOMEMLIMIT
+          value: "512MiB"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+---
+# ========== Service ==========
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  - name: zipkin
+    port: 9411
+    targetPort: 9411
+    protocol: TCP
+  - name: health-check
+    port: 13133
+    targetPort: 13133
+    protocol: TCP

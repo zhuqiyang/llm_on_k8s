@@ -1,0 +1,89 @@
+# 02-jaeger-production.yaml
+# Jaeger 生产模式实例 — Elasticsearch 持久化存储
+# 注意：需要先部署 Elasticsearch（01-elasticsearch.yaml）
+---
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger-production
+  namespace: observability
+spec:
+  strategy: production
+  # ========== Collector ==========
+  collector:
+    image: jaegertracing/jaeger-collector:1.62.0
+    replicas: 1
+    options:
+      log-level: info
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+  # ========== Query ==========
+  query:
+    image: jaegertracing/jaeger-query:1.62.0
+    replicas: 1
+    options:
+      log-level: info
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+  # ========== Ingester ==========
+  ingester:
+    image: jaegertracing/jaeger-ingester:1.62.0
+    replicas: 1
+    options:
+      log-level: info
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+  # ========== Elasticsearch 存储 ==========
+  storage:
+    type: elasticsearch
+    options:
+      es:
+        # 指向同 namespace 下的 ES 服务
+        server-urls: http://elasticsearch.observability.svc.cluster.local:9200
+        # 索引前缀
+        index-prefix: jaeger
+        # 每天创建新索引
+        create-index-templates: true
+        # 数据保留天数（ES 端配合 ILM 策略）
+        num-shards: 1
+        num-replicas: 0                  # 单节点 ES，无需副本
+    # Span 数据保留策略
+    dependencies:
+      enabled: true
+      schedule: "55 23 * * *"           # 每天 23:55 计算依赖关系
+      sparkMaster: ""
+  # ========== 采样策略（生产环境保守） ==========
+  sampling:
+    options:
+      default_strategy:
+        type: probabilistic
+        param: 0.1                       # 10% 采样
+      service_strategies:
+        - service: ingress-nginx
+          type: probabilistic
+          param: 0.05                    # Ingress 仅 5% 采样
+  # ========== UI 配置 ==========
+  ui:
+    options:
+      dependencies:
+        menuEnabled: true
+      monitor:
+        menuEnabled: true
+  # ========== Ingress ==========
+  ingress:
+    enabled: false                       # 使用自定义 04-jaeger-ingress.yaml

@@ -1,0 +1,65 @@
+# 05-otel-instrumentation-cm.yaml
+# OpenTelemetry Python 自动注入 — 启动脚本 ConfigMap
+# 通过 InitContainer 挂载此脚本，为 Python 服务注入 OTEL 追踪
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-python-instrumentation
+  namespace: llm-inference
+  labels:
+    app: otel-instrumentation
+data:
+  # ========== OTEL 安装脚本（InitContainer 执行） ==========
+  install.sh: |
+    #!/bin/bash
+    set -e
+    echo "[$(date)] Installing OpenTelemetry Python packages..."
+
+    # 安装到共享 Volume
+    pip install --target /otel-packages --no-cache-dir \
+      opentelemetry-distro==0.48b0 \
+      opentelemetry-exporter-otlp-proto-grpc==1.27.0 \
+      opentelemetry-instrumentation-fastapi==0.48b0 \
+      opentelemetry-instrumentation-grpc==0.48b0 \
+      opentelemetry-instrumentation-requests==0.48b0 \
+      opentelemetry-instrumentation-httpx==0.48b0 \
+      opentelemetry-instrumentation-logging==0.48b0 \
+      opentelemetry-instrumentation-asgi==0.48b0 \
+      opentelemetry-sdk==1.27.0 \
+      opentelemetry-api==1.27.0
+
+    echo "[$(date)] OpenTelemetry installation complete"
+    echo "[$(date)] Installed packages:"
+    ls -la /otel-packages/ | head -20
+
+  # ========== OTEL 包装启动脚本 ==========
+  entrypoint.sh: |
+    #!/bin/bash
+    set -e
+
+    # 默认配置（可通过环境变量覆盖）
+    OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-unknown-service}"
+    OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector.observability.svc.cluster.local:4317}"
+    OTEL_TRACES_EXPORTER="${OTEL_TRACES_EXPORTER:-otlp}"
+    OTEL_PROPAGATORS="${OTEL_PROPAGATORS:-tracecontext,baggage}"
+    OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED="${OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED:-true}"
+
+    export OTEL_SERVICE_NAME
+    export OTEL_EXPORTER_OTLP_ENDPOINT
+    export OTEL_TRACES_EXPORTER
+    export OTEL_PROPAGATORS
+    export OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED
+    export PYTHONPATH="/otel-packages:${PYTHONPATH}"
+
+    echo "[$(date)] OTEL Configuration:"
+    echo "  Service Name:  $OTEL_SERVICE_NAME"
+    echo "  OTLP Endpoint: $OTEL_EXPORTER_OTLP_ENDPOINT"
+    echo "  Propagators:   $OTEL_PROPAGATORS"
+
+    # 使用 opentelemetry-instrument 包装原始启动命令
+    exec opentelemetry-instrument \
+      --traces_exporter "$OTEL_TRACES_EXPORTER" \
+      --exporter_otlp_endpoint "$OTEL_EXPORTER_OTLP_ENDPOINT" \
+      --service_name "$OTEL_SERVICE_NAME" \
+      -- "$@"
