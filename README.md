@@ -296,9 +296,14 @@ modelscope download --model Qwen/Qwen2.5-Coder-3B-Instruct-AWQ --local_dir ./mod
 ### 4.4 上传模型
 
 ```bash
-mc mirror --overwrite --remove ./dir/ models/llm-models/Qwen3-0.6B
+mc mirror --overwrite --remove ./models/ models/llm-models/Qwen3-0.6B
 
 mc ls models/llm-models/Qwen3-0.6B
+
+
+modelscope download --model Qwen/Qwen2.5-Coder-3B-Instruct-AWQ --local_dir ./models
+
+mc ls models/llm-models/Qwen/Qwen2.5-Coder-3B-Instruct-AWQ
 ```
 
 ---
