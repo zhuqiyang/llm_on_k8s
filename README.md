@@ -287,7 +287,10 @@ pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 pip install modelscope
 
 
-modelscope download --model Qwen/Qwen3-0.6B  --local_dir ./dir
+modelscope download --model Qwen/Qwen3-0.6B  --local_dir ./models
+
+
+modelscope download --model Qwen/Qwen2.5-Coder-3B-Instruct-AWQ --local_dir ./models
 ```
 
 ### 4.4 上传模型
