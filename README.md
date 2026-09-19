@@ -280,6 +280,9 @@ python3 -m venv modelscope_env
 # 激活虚拟环境
 source modelscope_env/bin/activate
 
+# 设置国内源
+pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
 # 现在再安装 modelscope
 pip install modelscope
 
